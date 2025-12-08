@@ -378,7 +378,23 @@ void MainWindow::drawGraph(const std::vector<Bank>& banks, const std::vector<Tra
         positions[banks[otherIndices[i]].name] = QPointF(x, y);
     }
 
-    // --- 2. DRAW EDGES ---
+    // --- 2. COUNT EDGES BETWEEN SAME PAIRS (for offset calculation) ---
+    std::map<std::pair<std::string, std::string>, int> edgeCount;
+    std::map<std::pair<std::string, std::string>, int> edgeIndex;
+
+    for(const auto& t : results) {
+        std::string from = t.payer;
+        std::string to = t.payee;
+        // Create canonical ordering for bidirectional edge counting
+        std::pair<std::string, std::string> key = (from < to) ?
+                                                      std::make_pair(from, to) : std::make_pair(to, from);
+        edgeCount[key]++;
+    }
+
+    // Reset for actual drawing
+    for(auto& p : edgeCount) edgeIndex[p.first] = 0;
+
+    // --- 3. DRAW EDGES ---
     for(const auto& t : results) {
         if(positions.find(t.payer) == positions.end() ||
             positions.find(t.payee) == positions.end()) continue;
@@ -390,53 +406,104 @@ void MainWindow::drawGraph(const std::vector<Bank>& banks, const std::vector<Tra
         double length = lineVector.length();
 
         if (length > nodeDiameter) {
+            // Calculate perpendicular offset for multiple edges
+            std::string from = t.payer;
+            std::string to = t.payee;
+            std::pair<std::string, std::string> key = (from < to) ?
+                                                          std::make_pair(from, to) : std::make_pair(to, from);
+
+            int totalEdges = edgeCount[key];
+            int currentIndex = edgeIndex[key]++;
+
+            // Calculate offset: spread edges symmetrically
+            double offsetDistance = 0;
+            if(totalEdges > 1) {
+                double maxOffset = 20.0; // pixels
+                offsetDistance = (currentIndex - (totalEdges - 1) / 2.0) * maxOffset;
+            }
+
+            // Direction vector
             QPointF dir = (end - start) / length;
-            QPointF realStart = start + dir * (nodeRadius + 3);
-            QPointF realEnd = end - dir * (nodeRadius + 3);
+            // Perpendicular vector (rotate 90 degrees)
+            QPointF perpDir(-dir.y(), dir.x());
 
-            QGraphicsLineItem* lineItem = scene->addLine(realStart.x(), realStart.y(),
-                                                         realEnd.x(), realEnd.y(),
-                                                         QPen(edgeColor, 2.5));
-            lineItem->setZValue(0);
+            // Apply offset to start and end
+            QPointF offsetVector = perpDir * offsetDistance;
+            QPointF offsetStart = start + offsetVector;
+            QPointF offsetEnd = end + offsetVector;
 
-            // Arrowhead
+            // Trim to node edges
+            QPointF realStart = offsetStart + dir * (nodeRadius + 3);
+            QPointF realEnd = offsetEnd - dir * (nodeRadius + 3);
+
+            // Draw curved line for better visualization
+            QPainterPath path;
+            path.moveTo(realStart);
+
+            if(std::abs(offsetDistance) > 5) {
+                // Bezier curve for offset edges
+                QPointF midPoint = (realStart + realEnd) / 2 + offsetVector * 0.3;
+                path.quadTo(midPoint, realEnd);
+            } else {
+                // Straight line for single edges
+                path.lineTo(realEnd);
+            }
+
+            QGraphicsPathItem* pathItem = scene->addPath(path, QPen(edgeColor, 2.5));
+            pathItem->setZValue(0);
+
+            // Arrowhead pointing to CREDITOR (payee)
             double arrowSize = 14;
-            double angle = std::atan2(realEnd.y() - realStart.y(), realEnd.x() - realStart.x());
+            QPointF arrowTip = realEnd;
 
-            QPointF arrowP1 = realEnd - QPointF(sin(angle + M_PI / 3) * arrowSize,
-                                                cos(angle + M_PI / 3) * arrowSize);
-            QPointF arrowP2 = realEnd - QPointF(sin(angle + M_PI - M_PI / 3) * arrowSize,
-                                                cos(angle + M_PI - M_PI / 3) * arrowSize);
+            // Calculate arrow angle from the curve direction
+            QPointF arrowBase = (std::abs(offsetDistance) > 5) ?
+                                    (realEnd * 0.95 + (realStart + realEnd) / 2 * 0.05) : // curved
+                                    (realEnd * 0.95 + realStart * 0.05); // straight
+
+            double angle = std::atan2(arrowTip.y() - arrowBase.y(),
+                                      arrowTip.x() - arrowBase.x());
+
+            QPointF arrowP1 = arrowTip - QPointF(cos(angle - M_PI / 6) * arrowSize,
+                                                 sin(angle - M_PI / 6) * arrowSize);
+            QPointF arrowP2 = arrowTip - QPointF(cos(angle + M_PI / 6) * arrowSize,
+                                                 sin(angle + M_PI / 6) * arrowSize);
 
             QPolygonF arrowHead;
-            arrowHead << realEnd << arrowP1 << arrowP2;
+            arrowHead << arrowTip << arrowP1 << arrowP2;
             QGraphicsPolygonItem* arrowItem = scene->addPolygon(arrowHead,
                                                                 QPen(edgeColor),
                                                                 QBrush(edgeColor));
-            arrowItem->setZValue(0);
+            arrowItem->setZValue(1);
 
-            // Amount Label
-            QPointF midPoint = (realStart + realEnd) / 2;
+            // Amount Label - position along the path
+            QPointF labelPos;
+            if(std::abs(offsetDistance) > 5) {
+                // Position on curve
+                labelPos = (realStart + realEnd) / 2 + offsetVector * 0.15;
+            } else {
+                labelPos = (realStart + realEnd) / 2;
+            }
 
             QGraphicsTextItem* amtText = new QGraphicsTextItem(QString("Rs %1").arg(t.amount));
             amtText->setFont(amountFont);
             amtText->setDefaultTextColor(amountTextColor);
 
             QRectF br = amtText->boundingRect();
-            QPointF textPos(midPoint.x() - br.width()/2, midPoint.y() - br.height()/2);
+            QPointF textPos(labelPos.x() - br.width()/2, labelPos.y() - br.height()/2);
             amtText->setPos(textPos);
 
             QGraphicsRectItem* bgRect = scene->addRect(textPos.x() - 2, textPos.y() - 1,
                                                        br.width() + 4, br.height() + 2,
                                                        QPen(Qt::NoPen), QBrush(amountBgColor));
-            bgRect->setZValue(1);
+            bgRect->setZValue(2);
 
             scene->addItem(amtText);
-            amtText->setZValue(2);
+            amtText->setZValue(3);
         }
     }
 
-    // --- 3. DRAW NODES ---
+    // --- 4. DRAW NODES ---
     for(const auto& b : banks) {
         if(positions.find(b.name) == positions.end()) continue;
         QPointF pos = positions[b.name];
@@ -452,7 +519,7 @@ void MainWindow::drawGraph(const std::vector<Bank>& banks, const std::vector<Tra
         QGraphicsEllipseItem* circle = scene->addEllipse(tlX, tlY, nodeDiameter, nodeDiameter,
                                                          QPen(nodeBorderColor, 2.5),
                                                          QBrush(nodeColor));
-        circle->setZValue(3);
+        circle->setZValue(4);
 
         // Text
         QString label = QString::fromStdString(b.name);
@@ -468,7 +535,7 @@ void MainWindow::drawGraph(const std::vector<Bank>& banks, const std::vector<Tra
 
         QRectF br = nameText->boundingRect();
         nameText->setPos(pos.x() - br.width()/2, pos.y() - br.height()/2);
-        nameText->setZValue(4);
+        nameText->setZValue(5);
     }
 
     scene->setSceneRect(scene->itemsBoundingRect().adjusted(-50, -50, 50, 50));
