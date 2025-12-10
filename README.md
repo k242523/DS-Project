@@ -1,7 +1,7 @@
 # Cash Flow Minimzer System
 
 24K-2523   Shuzain Ali
-24K-2558.  Aziz Ur Rehman
+24K-2528.  Aziz Ur Rehman
 
 ## Introduction
 The Cash Flow Minimizer System is a data structure–based application that helps a group of individuals, departments, or organizations settle mutual debts with the least number of transactions possible. In many real-world situations, multiple people owe each other varying amounts, and performing all transactions separately becomes inefficient.
